@@ -48,13 +48,17 @@ class ActionPolicy:
 def build_default_policy() -> ActionPolicy:
     """Build the policy from ``config.settings.ALLOWED_ACTIONS``.
 
-    Every name is registered with no handler, proving the allowlist works
-    without enabling any capability.
+    Each name is registered with a human-readable description. Handlers are not
+    attached here: execution is dispatched separately by
+    :func:`actions.registry.build_executor`, so the policy stays a pure
+    allowlist that never performs an action itself.
     """
     specs = [
         ActionSpec(
             name=name,
-            description="Allowlisted action (Phase 1 placeholder; no handler).",
+            description=settings.ACTION_DESCRIPTIONS.get(
+                name, "Allowlisted action."
+            ),
         )
         for name in settings.ALLOWED_ACTIONS
     ]

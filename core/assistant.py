@@ -19,10 +19,11 @@ thread); a no-op is used by default so core stays silent and testable.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from core.command_router import CommandRouter
 from core.controller import AssistantController
+from core.intents import IntentName
 from core.states import AssistantState
 from core.voice_pipeline import ListenResult, ListenStatus
 from security.approval import ApprovalRequest
@@ -87,7 +88,25 @@ class VoiceAssistant:
             self._return_to_idle()
             return None
 
-        # Typed commands arrive while IDLE; activate quietly so we can propose.
+        # Control command: stop everything and clear any pending proposal.
+        # It needs no approval and never reaches the approval panel.
+        if intent.action_name == IntentName.CANCEL_COMMAND.value:
+            self._controller.cancel()
+            self._speak("Cancelled.")
+            return None
+
+        return self.propose_action(intent.action_name, dict(intent.arguments))
+
+    def propose_action(
+        self, action_name: str, arguments: Mapping[str, object] | None = None
+    ) -> ApprovalRequest | None:
+        """Propose one structured action through the normal approval path.
+
+        This is the same safe entry point :meth:`submit_text` uses; the UI calls
+        it directly for actions it builds itself (for example a file chosen in a
+        picker). It only ever creates a *proposal* — never an execution.
+        """
+        # Typed or UI actions arrive while IDLE; activate quietly so we can propose.
         if self._controller.state is AssistantState.IDLE:
             self._controller.activate()
         if self._controller.state is not AssistantState.LISTENING:
@@ -96,7 +115,7 @@ class VoiceAssistant:
 
         try:
             approval = self._controller.propose_action(
-                intent.action_name, dict(intent.arguments)
+                action_name, dict(arguments or {})
             )
         except Exception as exc:  # policy/transition problems are reported, not fatal
             self._speak("I couldn't propose that.")
@@ -104,7 +123,7 @@ class VoiceAssistant:
             self._notify_message(f"Could not propose action: {exc}")
             return None
 
-        self._speak(f"Proposed {approval.action_name}. Awaiting your approval.")
+        self._speak(f"Proposed {action_name}. Awaiting your approval.")
         return approval
 
     def handle_listen_result(self, result: ListenResult) -> None:

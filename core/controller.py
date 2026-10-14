@@ -16,8 +16,9 @@ Key safety properties implemented here:
   approved. A stale token, a missing proposal, or an expired one is refused.
 * :meth:`AssistantController.cancel` clears any pending proposal and returns to
   IDLE, so a not-yet-started action can never run.
-* Phase 1 has no real actions. The default executor refuses everything, so even
-  an approved action reports "not implemented" rather than a false success.
+* The controller is executor-agnostic. The default executor refuses everything;
+  Phase 4 injects the action registry (see :mod:`actions.registry`). Whatever the
+  executor returns is reported honestly, never as a false success.
 
 The controller has **no** Qt dependency and takes an injectable clock and
 executor, which makes every path above unit-testable.
@@ -61,7 +62,7 @@ class ApprovalExpiredError(ApprovalError):
 
 
 class ActionNotImplementedError(AssistantError):
-    """Raised by the default executor: Phase 1 ships no real actions."""
+    """Raised by the default executor: no real action is implemented."""
 
 
 @dataclass(frozen=True)
@@ -79,15 +80,30 @@ class ExecutionOutcome:
 
 
 def refusing_executor(action_name: str, arguments: Mapping[str, object]) -> object:
-    """Default executor for Phase 1: refuse to do anything.
+    """Default executor: refuse to do anything.
 
     Approving an action still exercises the full state flow, but because no
     handler exists the assistant reports "not implemented" instead of a false
-    success.
+    success. The real app injects the Phase 4 executor from ``actions.registry``.
     """
     raise ActionNotImplementedError(
-        f"Action '{action_name}' is not implemented in Phase 1."
+        f"Action '{action_name}' is not implemented."
     )
+
+
+def _interpret_result(result: object) -> tuple[bool, str]:
+    """Read ``(succeeded, detail)`` from an executor's return value.
+
+    An executor may return a structured result (anything exposing ``succeeded``
+    and ``detail``, such as :class:`actions.base.ActionResult`). Any other return
+    value keeps the original meaning: the action ran and did not raise.
+    """
+    succeeded = getattr(result, "succeeded", None)
+    detail = getattr(result, "detail", None)
+    if isinstance(succeeded, bool) and isinstance(detail, str):
+        return succeeded, detail
+    return True, "Completed."
+
 
 
 class AssistantController:
@@ -306,7 +322,7 @@ class AssistantController:
             return outcome
 
         try:
-            self._executor(action_name, arguments)
+            result = self._executor(action_name, arguments)
         except ActionNotImplementedError as exc:
             outcome = ExecutionOutcome(
                 action_name=action_name,
@@ -322,11 +338,12 @@ class AssistantController:
                 detail=f"Execution failed: {exc}",
             )
         else:
+            succeeded, detail = _interpret_result(result)
             outcome = ExecutionOutcome(
                 action_name=action_name,
                 started=True,
-                succeeded=True,
-                detail="Completed.",
+                succeeded=succeeded,
+                detail=detail,
             )
 
         self._last_outcome = outcome

@@ -33,6 +33,10 @@ htmlcov/
 # Speech models (large; downloaded separately, never committed)
 models/
 
+# Phase 4 action sandbox and audit log (runtime data, never committed)
+workspace/
+logs/
+
 # Editors / OS
 .vscode/
 .idea/

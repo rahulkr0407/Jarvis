@@ -39,11 +39,112 @@ ACTIVATION_SHORTCUT: str = "Ctrl+Space"
 # The ONLY action names JARVIS may ever propose. This is an allowlist: anything
 # not listed here is denied by default. Later phases attach handlers; approving
 # any of them still does nothing yet.
+#
+# Note: ``cancel_command`` is intentionally absent. It is a *control* command
+# (stop everything, clear any pending proposal), not an action, so it is handled
+# directly and never requires approval.
 ALLOWED_ACTIONS: tuple[str, ...] = (
     "open_application",
     "set_volume",
     "search_web",
+    "tell_time",
+    "list_directory",
+    "create_folder",
+    "open_url",
+    "open_file",
 )
+
+# --------------------------------------------------------------------------- #
+# Command parsing limits (Phase 3)
+# --------------------------------------------------------------------------- #
+# Longest accepted search query, in characters. Anything longer is truncated.
+MAX_SEARCH_QUERY_LENGTH: int = 200
+
+# Longest accepted new-folder name, in characters.
+MAX_FOLDER_NAME_LENGTH: int = 64
+
+# The ONLY locations list_directory / create_folder may target. These are
+# well-known *names* for the user's own folders; the router never accepts an
+# absolute path, a drive, or a relative path with separators.
+SAFE_FOLDERS: tuple[str, ...] = (
+    "home",
+    "desktop",
+    "documents",
+    "downloads",
+)
+
+# The location used when a command names no folder.
+DEFAULT_SAFE_FOLDER: str = "home"
+
+# --------------------------------------------------------------------------- #
+# Phase 4: permission-controlled actions
+# --------------------------------------------------------------------------- #
+# Human-readable descriptions shown alongside a proposal before approval.
+ACTION_DESCRIPTIONS: dict[str, str] = {
+    "open_application": "Launch an allowlisted application.",
+    "open_url": "Open an http(s) URL in the default browser.",
+    "list_directory": "Read the contents of a permitted folder.",
+    "create_folder": "Create a new folder inside a permitted location.",
+    "open_file": "Open a permitted, non-executable file.",
+    "search_web": "Open a web search for a query (not implemented).",
+    "tell_time": "Report the current time (not implemented).",
+    "set_volume": "Change the system volume (not implemented).",
+}
+
+# Applications JARVIS may launch. Maps a command word to an explicit argument
+# vector (argv). Only names listed here can ever launch; everything else is
+# refused. Prefer absolute paths for the strongest guarantee (see README risks);
+# a bare name is resolved with ``shutil.which`` (PATH lookup).
+APPLICATION_ALLOWLIST: dict[str, tuple[str, ...]] = {
+    "notepad": ("notepad.exe",),
+    "calculator": ("calc.exe",),
+    "paint": ("mspaint.exe",),
+    "explorer": ("explorer.exe",),
+}
+
+# The sandbox for every file action. Relative paths resolve against PROJECT_ROOT.
+# Nothing outside this tree can be listed, created, or opened.
+WORKSPACE_ROOT: str = "workspace"
+
+# Folder words (from Phase 3) mapped to sub-directories of WORKSPACE_ROOT.
+# "." means the workspace root itself. Change these only to deliberately widen
+# where file actions may operate.
+FOLDER_MAP: dict[str, str] = {
+    "home": ".",
+    "desktop": "desktop",
+    "documents": "documents",
+    "downloads": "downloads",
+}
+
+# File extensions open_file may open. Executable/script/link types are absent on
+# purpose: opening them would run code.
+SAFE_OPEN_EXTENSIONS: tuple[str, ...] = (
+    ".txt",
+    ".md",
+    ".log",
+    ".csv",
+    ".json",
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+)
+
+# Hard time limit for a single action, in seconds.
+EXECUTION_TIMEOUT_SECONDS: float = 5.0
+
+# Most directory entries list_directory will show in one result.
+MAX_DIRECTORY_ENTRIES: int = 50
+
+# When True, actions report what they WOULD do and touch nothing. Safe for
+# development. Also settable from the command line with ``--dry-run``.
+DRY_RUN: bool = False
+
+# Append-only JSON-lines audit log. Relative paths resolve against PROJECT_ROOT.
+# Arguments are scrubbed before writing; secrets are never stored.
+AUDIT_LOG_PATH: str = "logs/audit.log"
 
 # --------------------------------------------------------------------------- #
 # Voice input (Phase 2)

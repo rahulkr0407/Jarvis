@@ -118,3 +118,102 @@ def test_cancel_returns_to_idle():
     assistant.request_listening()
     assistant.cancel()
     assert controller.state is AssistantState.IDLE
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3: new intents
+# --------------------------------------------------------------------------- #
+def test_cancel_command_returns_to_idle_without_approval():
+    assistant, controller, _ = make_assistant()
+    assistant.request_listening()
+    result = assistant.submit_text("cancel")
+    assert result is None
+    assert controller.state is AssistantState.IDLE
+    assert controller.pending_approval is None
+
+
+def test_cancel_command_clears_a_pending_proposal():
+    assistant, controller, _ = make_assistant()
+    assistant.request_listening()
+    assistant.submit_text("open notepad")
+    assert controller.state is AssistantState.AWAITING_APPROVAL
+    assistant.submit_text("stop")
+    assert controller.state is AssistantState.IDLE
+    assert controller.pending_approval is None
+
+
+def test_cancel_command_from_idle_is_safe():
+    assistant, controller, _ = make_assistant()
+    assert assistant.submit_text("never mind") is None
+    assert controller.state is AssistantState.IDLE
+
+
+def test_tell_time_proposes_and_never_executes():
+    assistant, controller, _ = make_assistant()
+    assistant.request_listening()
+    approval = assistant.submit_text("what time is it")
+    assert approval is not None
+    assert controller.pending_approval.action_name == "tell_time"
+    assert controller.state is AssistantState.AWAITING_APPROVAL
+    assert controller.last_outcome is None
+
+
+def test_list_directory_proposes_with_safe_location():
+    assistant, controller, _ = make_assistant()
+    assistant.request_listening()
+    approval = assistant.submit_text("list files in documents")
+    assert approval is not None
+    assert controller.pending_approval.action_name == "list_directory"
+    assert controller.pending_approval.arguments["location"] == "documents"
+
+
+def test_create_folder_proposes_with_validated_args():
+    assistant, controller, _ = make_assistant()
+    assistant.request_listening()
+    approval = assistant.submit_text("create folder plans in documents")
+    assert approval is not None
+    assert controller.pending_approval.action_name == "create_folder"
+    assert controller.pending_approval.arguments == {
+        "name": "plans",
+        "location": "documents",
+    }
+
+
+def test_unsafe_folder_command_is_refused():
+    assistant, controller, _ = make_assistant()
+    assistant.request_listening()
+    assert assistant.submit_text("create folder plans in C:\\Windows") is None
+    assert controller.state is AssistantState.IDLE
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4: structured proposals from the UI
+# --------------------------------------------------------------------------- #
+def test_propose_action_creates_a_proposal_from_idle():
+    assistant, controller, _ = make_assistant()
+    approval = assistant.propose_action("open_file", {"path": "x"})
+    assert approval is not None
+    assert controller.pending_approval.action_name == "open_file"
+    assert controller.state is AssistantState.AWAITING_APPROVAL
+
+
+def test_propose_action_never_executes():
+    assistant, controller, _ = make_assistant()
+    assistant.propose_action("open_url", {"url": "https://example.com"})
+    assert controller.state is not AssistantState.EXECUTING
+    assert controller.last_outcome is None
+
+
+def test_propose_action_denied_by_policy_returns_none():
+    assistant, controller, _ = make_assistant()
+    result = assistant.propose_action("format_c_drive", {})
+    assert result is None
+    assert controller.state is AssistantState.IDLE
+
+
+def test_typed_open_url_proposes():
+    assistant, controller, _ = make_assistant()
+    assistant.request_listening()
+    approval = assistant.submit_text("go to example.com")
+    assert approval is not None
+    assert controller.pending_approval.action_name == "open_url"

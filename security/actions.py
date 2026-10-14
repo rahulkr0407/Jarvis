@@ -23,8 +23,9 @@ class ActionSpec:
     Attributes:
         name: The exact identifier the policy matches against.
         description: Human-readable summary, shown to the user.
-        handler: The callable that performs the action. ``None`` in Phase 1
-            because no real computer-control actions are implemented yet.
+        handler: The callable that performs the action. ``None`` means the
+            action is allowlisted but has no real implementation yet (the
+            executor then reports "not implemented" instead of a false success).
     """
 
     name: str

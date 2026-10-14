@@ -87,3 +87,52 @@ class FakeTTS:
 
     def say(self, text: str) -> None:
         self.spoken.append(text)
+
+
+class RecordingAuditLogger:
+    """An audit logger that keeps records in memory for assertions."""
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    def record(self, action_name, arguments, *, succeeded, detail, dry_run) -> None:
+        self.records.append(
+            {
+                "action": action_name,
+                "arguments": dict(arguments),
+                "succeeded": succeeded,
+                "detail": detail,
+                "dry_run": dry_run,
+            }
+        )
+
+
+def make_action_context(tmp_path, **overrides):
+    """Build an :class:`ActionContext` rooted at ``tmp_path`` for tests."""
+    from pathlib import Path
+
+    from actions.base import ActionContext
+
+    workspace = Path(tmp_path).resolve() / "workspace"
+    folder_map = {
+        "home": workspace,
+        "desktop": workspace / "desktop",
+        "documents": workspace / "documents",
+        "downloads": workspace / "downloads",
+    }
+    permitted = tuple(dict.fromkeys(folder_map.values()))
+
+    defaults = {
+        "permitted_directories": permitted,
+        "folder_map": folder_map,
+        "application_allowlist": {"notepad": ("notepad.exe",)},
+        "safe_extensions": frozenset({".txt", ".md", ".png"}),
+        "timeout_seconds": 5.0,
+        "max_directory_entries": 50,
+        "dry_run": False,
+        "audit": RecordingAuditLogger(),
+        "clock": lambda: 0.0,
+    }
+    defaults.update(overrides)
+    return ActionContext(**defaults)
+

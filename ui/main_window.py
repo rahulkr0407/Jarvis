@@ -1,7 +1,8 @@
-"""The JARVIS window (Phase 2: voice input + spoken replies).
+"""The JARVIS window (Phases 2–4: voice I/O, structured commands, actions).
 
 It shows the assistant status, a transcript area, an explicit activation
-control, a cancel/stop control, a typed-command box, and the approval panel.
+control, a cancel/stop control, a typed-command box, an "Open File…" picker, and
+the approval panel.
 
 Safety-relevant UI rules honoured here:
 
@@ -12,8 +13,9 @@ Safety-relevant UI rules honoured here:
 * Typed commands never touch the microphone; they reuse the same router and
   approval flow, which makes the app testable without audio hardware.
 * The UI never claims success on its own. It renders the controller's real state
-  and the executor's real outcome (which is still "not implemented" in Phase 2).
-* Cancel stops the audio worker and clears any pending proposal.
+  and the executor's real outcome (implemented actions report what happened;
+  anything else reports "not implemented").
+* Cancel stops the audio worker and clears any pending proposal before it runs.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from __future__ import annotations
 from PySide6.QtCore import QMetaObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -31,6 +34,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from actions.base import ActionContext, build_action_context
+from actions.registry import build_executor
 from audio.microphone import MicrophoneRecorder
 from audio.stt import VoskSpeechToText
 from audio.tts import Pyttsx3TextToSpeech
@@ -62,9 +67,20 @@ class MainWindow(QMainWindow):
         self,
         controller: AssistantController | None = None,
         parent: QWidget | None = None,
+        *,
+        action_context: ActionContext | None = None,
     ) -> None:
         super().__init__(parent)
-        self._controller = controller or AssistantController(build_default_policy())
+        if controller is None:
+            self._action_context = action_context or build_action_context()
+            controller = AssistantController(
+                build_default_policy(),
+                executor=build_executor(self._action_context),
+            )
+        else:
+            # A controller was injected (tests); keep any context for the picker.
+            self._action_context = action_context
+        self._controller = controller
         self._controller.add_listener(self._on_event)
 
         # Worker-thread bookkeeping.
@@ -129,7 +145,8 @@ class MainWindow(QMainWindow):
         typed = QHBoxLayout()
         self.command_input = QLineEdit()
         self.command_input.setPlaceholderText(
-            'Type a command, e.g. "open notepad" or "set volume 30"'
+            'Try "open notepad", "what time is it", "list files in documents", '
+            '"create folder plans in documents", or "cancel"'
         )
         self.command_input.returnPressed.connect(self._on_send_command)
         typed.addWidget(self.command_input)
@@ -137,6 +154,10 @@ class MainWindow(QMainWindow):
         self.send_button = QPushButton("Send")
         self.send_button.clicked.connect(self._on_send_command)
         typed.addWidget(self.send_button)
+
+        self.open_file_button = QPushButton("Open File…")
+        self.open_file_button.clicked.connect(self._on_open_file)
+        typed.addWidget(self.open_file_button)
         layout.addLayout(typed)
 
         # Transcript area
@@ -258,6 +279,26 @@ class MainWindow(QMainWindow):
         self._assistant.submit_text(text)
         self._render()
 
+    def _on_open_file(self) -> None:
+        """Let the user pick a file, then propose opening it for approval."""
+        start_dir = ""
+        if self._action_context is not None:
+            home = self._action_context.folder_map.get("home")
+            if home is not None:
+                start_dir = str(home)
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open a file (proposes an action awaiting approval)",
+            start_dir,
+            "Safe files (*.txt *.md *.log *.csv *.json *.pdf *.png *.jpg "
+            "*.jpeg *.gif *.bmp);;All files (*)",
+        )
+        if not path:
+            return
+        self.transcript_label.setText(f'Picked file: "{path}"')
+        self._assistant.propose_action("open_file", {"path": path})
+        self._render()
+
     def _on_approve(self) -> None:
         try:
             self._controller.approve()
@@ -313,7 +354,8 @@ class MainWindow(QMainWindow):
             pending = self._controller.pending_approval
             if pending is not None:
                 self.proposal_label.setText(
-                    f"Proposed action: {pending.action_name}\n"
+                    f"Proposed: {self._describe(pending.action_name, pending.arguments)}\n"
+                    f"Action: {pending.action_name}\n"
                     f"Arguments: {dict(pending.arguments)}\n"
                     f"Expires at: {pending.expires_at:.1f}"
                 )
@@ -322,7 +364,31 @@ class MainWindow(QMainWindow):
         self.activate_button.setEnabled(state is AssistantState.IDLE)
         self.command_input.setEnabled(accepting_input)
         self.send_button.setEnabled(accepting_input)
+        self.open_file_button.setEnabled(accepting_input)
         self.cancel_button.setEnabled(state is not AssistantState.IDLE)
+
+    @staticmethod
+    def _describe(action_name: str, arguments) -> str:
+        """Return a short, human-readable summary of a proposal."""
+        args = dict(arguments)
+        if action_name == "open_application":
+            return f"Open application '{args.get('target')}'"
+        if action_name == "open_url":
+            return f"Open URL {args.get('url')}"
+        if action_name == "list_directory":
+            return f"List folder '{args.get('location')}'"
+        if action_name == "create_folder":
+            return f"Create folder '{args.get('name')}' in '{args.get('location')}'"
+        if action_name == "open_file":
+            target = args.get("path") or args.get("name")
+            return f"Open file '{target}'"
+        if action_name == "tell_time":
+            return "Report the current time"
+        if action_name == "set_volume":
+            return f"Set volume to {args.get('level')}"
+        if action_name == "search_web":
+            return f"Search the web for '{args.get('query')}'"
+        return action_name
 
     # ------------------------------------------------------------------ #
     # Shutdown
