@@ -43,6 +43,20 @@ class MicrophoneRecorder:
         """Sample rate of the recorded audio, in Hz."""
         return self._samplerate
 
+    def _describe_device(self, sounddevice) -> str:
+        """Best-effort description of the input device that will be opened.
+
+        Lazy and exception-safe: a driver query problem must never block
+        capture, so any failure degrades to ``"unknown"``.
+        """
+        try:
+            info = sounddevice.query_devices(self._device, "input")
+            name = info.get("name", "unknown")
+            index = info.get("index", "?")
+            return f"{name!r} (index={index})"
+        except Exception:  # pragma: no cover - depends on hardware/driver
+            return "unknown"
+
     @staticmethod
     def _import_sounddevice():
         try:
@@ -69,7 +83,13 @@ class MicrophoneRecorder:
         """
         should_stop = should_stop or (lambda: False)
         sounddevice = self._import_sounddevice()
-        logger.debug("Opening microphone for one utterance")
+        logger.info(
+            "Microphone open request: device=%s samplerate=%d channels=1 "
+            "blocksize=%d dtype=int16",
+            self._describe_device(sounddevice),
+            self._samplerate,
+            self._block_frames,
+        )
 
         start = self._clock()
         try:

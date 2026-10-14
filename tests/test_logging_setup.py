@@ -239,3 +239,55 @@ def test_console_handler_survives_unencodable_output(monkeypatch, tmp_path):
     assert b"\\u2192" in buffer.getvalue()
     # ...and the UTF-8 file kept the real character.
     assert "voice init arrow \u2192 done" in log_file.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# JARVIS_LOG_LEVEL configuration
+# --------------------------------------------------------------------------- #
+def test_resolve_log_level_explicit_overrides_env(monkeypatch):
+    monkeypatch.setenv("JARVIS_LOG_LEVEL", "DEBUG")
+    assert logging_setup.resolve_log_level("WARNING") == "WARNING"
+
+
+def test_resolve_log_level_reads_env_case_insensitively(monkeypatch):
+    monkeypatch.setenv("JARVIS_LOG_LEVEL", "debug")
+    assert logging_setup.resolve_log_level(None) == "DEBUG"
+
+
+def test_resolve_log_level_accepts_a_number(monkeypatch):
+    monkeypatch.setenv("JARVIS_LOG_LEVEL", "10")
+    assert logging_setup.resolve_log_level(None) == 10
+
+
+def test_resolve_log_level_defaults_when_unset(monkeypatch):
+    monkeypatch.delenv("JARVIS_LOG_LEVEL", raising=False)
+    assert logging_setup.resolve_log_level(None) == logging_setup.settings.LOG_LEVEL
+
+
+def test_resolve_log_level_invalid_falls_back(monkeypatch):
+    monkeypatch.setenv("JARVIS_LOG_LEVEL", "LOUD")
+    assert logging_setup.resolve_log_level(None) == logging_setup.settings.LOG_LEVEL
+
+
+def test_setup_logging_honors_env_level(monkeypatch, tmp_path):
+    monkeypatch.setenv("JARVIS_LOG_LEVEL", "DEBUG")
+    try:
+        logger = setup_logging(log_path=tmp_path / "env_level.log", stream=False)
+        assert logger.level == logging.DEBUG
+    finally:
+        _cleanup_root()
+
+
+def test_setup_logging_warns_and_keeps_default_on_invalid_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("JARVIS_LOG_LEVEL", "LOUD")
+    log_file = tmp_path / "bad_level.log"
+    try:
+        logger = setup_logging(log_path=log_file, stream=False)
+        # Falls back to the default level rather than silencing logging.
+        assert logger.level == logging.getLevelName(logging_setup.settings.LOG_LEVEL)
+    finally:
+        _cleanup_root()
+
+    content = log_file.read_text(encoding="utf-8")
+    assert "JARVIS_LOG_LEVEL" in content
+    assert "LOUD" in content

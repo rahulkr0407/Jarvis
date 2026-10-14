@@ -32,7 +32,7 @@ import logging
 import os
 import re
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -43,6 +43,10 @@ _HANDLER_TAG = "_jarvis_handler"
 
 #: Environment variables whose values must never appear in a log line.
 _SECRET_ENV_VARS = ("JARVIS_LLM_API_KEY", "OPENAI_API_KEY")
+
+#: Optional environment variable that tunes verbosity (e.g. ``DEBUG``). Default
+#: behaviour is unchanged: when unset the app logs at ``settings.LOG_LEVEL``.
+_LOG_LEVEL_ENV = "JARVIS_LOG_LEVEL"
 
 _BEARER = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._\-]{4,})")
 _SECRET_KV = re.compile(
@@ -189,6 +193,44 @@ def _console_stream():
     return _LenientConsoleStream(stream)
 
 
+def _parse_level(raw: str) -> str | int | None:
+    """Parse a level string into a logging level, or ``None`` if unrecognized.
+
+    Accepts standard level names case-insensitively (``DEBUG``, ``INFO``, …) and
+    bare integers (including the logging module's numeric levels).
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    upper = text.upper()
+    if upper in logging.getLevelNamesMapping():
+        return upper
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def resolve_log_level(
+    level: str | int | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str | int:
+    """Return the effective log level, honoring ``JARVIS_LOG_LEVEL``.
+
+    An explicit ``level`` always wins (tests and callers rely on this). When it
+    is ``None``, ``JARVIS_LOG_LEVEL`` is used if it names a standard level or is
+    a bare integer. An empty or unrecognized value falls back to
+    :data:`config.settings.LOG_LEVEL`, so a typo can never silence logging or
+    stop startup.
+    """
+    if level is not None:
+        return level
+    source = os.environ if env is None else env
+    parsed = _parse_level(source.get(_LOG_LEVEL_ENV) or "")
+    return parsed if parsed is not None else settings.LOG_LEVEL
+
+
 def setup_logging(
     *,
     log_path: str | Path | None = None,
@@ -204,7 +246,7 @@ def setup_logging(
     skipped, but the app still runs. Returns the configured root logger.
     """
     logger = logging.getLogger()
-    logger.setLevel(level if level is not None else settings.LOG_LEVEL)
+    logger.setLevel(resolve_log_level(level))
 
     secret_values = (
         collect_secrets() if secrets is None else tuple(secrets)
@@ -246,5 +288,15 @@ def setup_logging(
     except Exception:
         # Logging is never allowed to stop the app from starting.
         pass
+
+    if level is None:
+        raw = (os.environ.get(_LOG_LEVEL_ENV) or "").strip()
+        if raw and _parse_level(raw) is None:
+            logger.warning(
+                "Ignoring invalid %s=%r; using %s",
+                _LOG_LEVEL_ENV,
+                raw,
+                settings.LOG_LEVEL,
+            )
 
     return logger

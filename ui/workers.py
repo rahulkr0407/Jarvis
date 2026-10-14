@@ -14,7 +14,11 @@ touches the controller: the controller is only ever mutated on the GUI thread.
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QObject, Signal, Slot
+
+logger = logging.getLogger(__name__)
 
 
 class ListenWorker(QObject):
@@ -38,7 +42,8 @@ class ListenWorker(QObject):
 
         try:
             result = self._pipeline.listen_once(should_stop=lambda: self._stop)
-        except Exception as exc:  # pragma: no cover - defensive catch-all
+        except Exception as exc:  # defensive catch-all
+            logger.exception("Listen worker failed")
             result = ListenResult(
                 ListenStatus.TRANSCRIPTION_ERROR,
                 message=f"Unexpected audio error: {exc}",

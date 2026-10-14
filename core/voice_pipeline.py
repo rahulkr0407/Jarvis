@@ -17,6 +17,7 @@ Design notes:
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from array import array
@@ -27,6 +28,8 @@ from enum import Enum
 from audio.errors import MicrophoneError, TranscriptionError
 from config import settings
 from core.command_router import CommandRouter, Intent
+
+logger = logging.getLogger(__name__)
 
 # Receives in-progress text (e.g. partial recognition). Optional; may be unused.
 PartialCallback = Callable[[str], None]
@@ -59,6 +62,15 @@ def _rms(block: bytes) -> float:
     if not samples:
         return 0.0
     return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+
+
+def _peak(block: bytes) -> int:
+    """Peak absolute amplitude of a block of 16-bit samples."""
+    samples = array("h")
+    samples.frombytes(block)
+    if not samples:
+        return 0
+    return max(max(samples), -min(samples))
 
 
 class VoiceCommandPipeline:
@@ -106,44 +118,94 @@ class VoiceCommandPipeline:
         start = self._clock()
         last_voice = start
         speech_started = False
+        blocks = 0
+        max_rms = 0.0
+        max_peak = 0
+        noise_floor = 0.0
+
+        def finish(result: ListenResult) -> ListenResult:
+            # Diagnostics only: status, levels, and transcript *length*. The
+            # recognized text itself is never logged (privacy).
+            logger.info(
+                "Listen complete: status=%s blocks=%d peak=%d max_rms=%.1f "
+                "noise_floor=%.1f speech_started=%s transcript_len=%d",
+                result.status.value,
+                blocks,
+                max_peak,
+                max_rms,
+                noise_floor,
+                speech_started,
+                len(result.transcript or ""),
+            )
+            return result
 
         try:
             for block in self._recorder.stream_blocks(
                 max_seconds=self._max_seconds, should_stop=should_stop
             ):
                 if should_stop():
-                    return ListenResult(ListenStatus.CANCELLED, message="Cancelled.")
+                    return finish(
+                        ListenResult(ListenStatus.CANCELLED, message="Cancelled.")
+                    )
                 collected.append(block)
+                rms = _rms(block)
+                peak = _peak(block)
+                if blocks == 0:
+                    noise_floor = rms
+                if rms > max_rms:
+                    max_rms = rms
+                if peak > max_peak:
+                    max_peak = peak
                 now = self._clock()
-                if _rms(block) >= self._rms_threshold:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "block %d frames=%d rms=%.1f peak=%d speech_started=%s "
+                        "elapsed=%.3f",
+                        blocks,
+                        len(block) // 2,
+                        rms,
+                        peak,
+                        speech_started,
+                        now - start,
+                    )
+                blocks += 1
+                if rms >= self._rms_threshold:
                     speech_started = True
                     last_voice = now
                 elif speech_started and (now - last_voice) >= self._silence_timeout:
                     break
                 elif not speech_started and (now - start) >= self._no_speech_timeout:
-                    return ListenResult(
-                        ListenStatus.NO_SPEECH, message="No speech detected."
+                    return finish(
+                        ListenResult(
+                            ListenStatus.NO_SPEECH, message="No speech detected."
+                        )
                     )
         except MicrophoneError as exc:
-            return ListenResult(ListenStatus.MICROPHONE_ERROR, message=str(exc))
+            return finish(
+                ListenResult(ListenStatus.MICROPHONE_ERROR, message=str(exc))
+            )
 
         if should_stop():
-            return ListenResult(ListenStatus.CANCELLED, message="Cancelled.")
+            return finish(ListenResult(ListenStatus.CANCELLED, message="Cancelled."))
         if not speech_started:
-            return ListenResult(
-                ListenStatus.NO_SPEECH, message="No speech detected."
+            return finish(
+                ListenResult(ListenStatus.NO_SPEECH, message="No speech detected.")
             )
 
         try:
             transcript = self._stt.transcribe(b"".join(collected))
         except TranscriptionError as exc:
-            return ListenResult(ListenStatus.TRANSCRIPTION_ERROR, message=str(exc))
+            return finish(
+                ListenResult(ListenStatus.TRANSCRIPTION_ERROR, message=str(exc))
+            )
 
         transcript = (transcript or "").strip()
         if not transcript:
-            return ListenResult(
-                ListenStatus.NO_SPEECH, message="No speech recognized."
+            return finish(
+                ListenResult(ListenStatus.NO_SPEECH, message="No speech recognized.")
             )
 
         intent = self._router.route(transcript)
-        return ListenResult(ListenStatus.OK, transcript=transcript, intent=intent)
+        return finish(
+            ListenResult(ListenStatus.OK, transcript=transcript, intent=intent)
+        )

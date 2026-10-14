@@ -348,6 +348,8 @@ grants a capability; every value only *limits* what JARVIS may do.
 - Voice: `VOSK_MODEL_PATH`, `RECORD_MAX_SECONDS`, `SILENCE_TIMEOUT_SECONDS`,
   `NO_SPEECH_TIMEOUT_SECONDS`, `TTS_ENABLED`, `TTS_RATE`, `TTS_VOLUME`.
 - Logging: `LOG_PATH`, `LOG_LEVEL`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`.
+  Set `JARVIS_LOG_LEVEL` (e.g. `DEBUG`) in the environment or `.env` to change
+  verbosity for a single run; an invalid value is ignored with a warning.
 
 ### Configuring Phase 5 (optional AI)
 
