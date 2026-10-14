@@ -16,6 +16,12 @@ Two safety properties matter here, and both are enforced by
   caps the file size and keeps a fixed number of backups (see the ``*_MAX_BYTES``
   and ``*_BACKUP_COUNT`` settings in :mod:`config.settings`).
 
+The optional console handler is defensive on Windows: if ``sys.stderr`` is
+absent (a windowed/frozen build) it is skipped entirely, and if the console
+cannot encode a character the record is still written using ``\\uXXXX``
+escapes. This avoids the ``--- Logging error ---`` spam that a failing stream
+handler otherwise produces, without muting any other logging error.
+
 :func:`setup_logging` is idempotent: calling it more than once replaces the
 handlers it previously installed rather than stacking duplicates.
 """
@@ -25,6 +31,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 from collections.abc import Iterable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -129,6 +136,59 @@ def _remove_old_handlers(logger: logging.Logger) -> None:
             handler.close()
 
 
+class _LenientConsoleStream:
+    """Wrap a text stream so an unencodable character cannot break logging.
+
+    The Windows console can use a legacy code page that cannot represent every
+    character in a log line. Without this, ``StreamHandler.emit`` raises
+    ``UnicodeEncodeError`` and the logging module prints ``--- Logging error ---``
+    and silently drops the record. Here only ``UnicodeEncodeError`` is handled:
+    the record is written with ``backslashreplace`` escapes so the diagnostic is
+    preserved (e.g. ``\\u2192``) instead of being lost. Every other exception is
+    left untouched and still reported by the logging module as before.
+    """
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        try:
+            return self._stream.write(text)
+        except UnicodeEncodeError:
+            encoding = getattr(self._stream, "encoding", None) or "utf-8"
+            escaped = text.encode(encoding, "backslashreplace").decode(
+                encoding, "replace"
+            )
+            return self._stream.write(escaped)
+
+    def flush(self) -> None:
+        flush = getattr(self._stream, "flush", None)
+        if flush is not None:
+            flush()
+
+    def isatty(self) -> bool:
+        isatty = getattr(self._stream, "isatty", None)
+        return bool(isatty()) if isatty is not None else False
+
+    def __getattr__(self, name):
+        # Delegate anything else (e.g. ``encoding``) to the wrapped stream.
+        return getattr(self._stream, name)
+
+
+def _console_stream():
+    """Return a safe console stream, or ``None`` when there is no console.
+
+    ``logging.StreamHandler`` binds ``sys.stderr`` when it is constructed, which
+    may be ``None`` in a windowed/frozen build. Returning ``None`` signals the
+    caller to skip the console handler entirely rather than install one whose
+    every ``emit`` would fail.
+    """
+    stream = sys.stderr
+    if stream is None:
+        return None
+    return _LenientConsoleStream(stream)
+
+
 def setup_logging(
     *,
     log_path: str | Path | None = None,
@@ -158,11 +218,13 @@ def setup_logging(
     )
 
     if stream:
-        stream_handler = logging.StreamHandler()
-        stream_handler.setFormatter(formatter)
-        stream_handler.addFilter(redactor)
-        setattr(stream_handler, _HANDLER_TAG, True)
-        logger.addHandler(stream_handler)
+        console = _console_stream()
+        if console is not None:
+            stream_handler = logging.StreamHandler(console)
+            stream_handler.setFormatter(formatter)
+            stream_handler.addFilter(redactor)
+            setattr(stream_handler, _HANDLER_TAG, True)
+            logger.addHandler(stream_handler)
 
     path = _resolve_log_path(log_path or settings.LOG_PATH)
     try:

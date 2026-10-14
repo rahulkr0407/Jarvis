@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import logging
+import types
 from logging.handlers import RotatingFileHandler
 
 import logging_setup
@@ -175,3 +177,65 @@ def test_log_file_rotation_keeps_bounded_backups(tmp_path):
     assert not (tmp_path / "rotating.log.3").exists()
     # The active file never exceeds the configured ceiling.
     assert log_file.stat().st_size <= 300
+
+
+# --------------------------------------------------------------------------- #
+# Console handler safety (Windows encoding / windowed builds)
+# --------------------------------------------------------------------------- #
+def test_lenient_console_stream_escapes_unencodable_characters():
+    buffer = io.BytesIO()
+    strict = io.TextIOWrapper(buffer, encoding="cp1252", errors="strict")
+    wrapper = logging_setup._LenientConsoleStream(strict)
+
+    # Would raise UnicodeEncodeError on the raw stream; the wrapper must not.
+    wrapper.write("arrow \u2192 here\n")
+    wrapper.flush()
+    assert b"arrow" in buffer.getvalue()
+    assert b"\\u2192" in buffer.getvalue()
+
+
+def test_console_stream_is_none_when_stderr_is_missing(monkeypatch):
+    monkeypatch.setattr(logging_setup, "sys", types.SimpleNamespace(stderr=None))
+    assert logging_setup._console_stream() is None
+
+
+def test_setup_logging_skips_console_handler_when_stderr_is_missing(
+    monkeypatch, tmp_path
+):
+    log_file = tmp_path / "console_missing.log"
+    monkeypatch.setattr(logging_setup, "sys", types.SimpleNamespace(stderr=None))
+
+    logger = setup_logging(log_path=log_file, level=logging.INFO, stream=True)
+    try:
+        # No console StreamHandler is installed when there is no stream to bind.
+        assert not any(
+            type(h) is logging.StreamHandler for h in logger.handlers
+        )
+        assert all(getattr(h, "stream", object()) is not None
+                   for h in logger.handlers)
+        # Logging still works (and reaches the file) instead of raising.
+        logger.info("no console, still here")
+    finally:
+        _cleanup_root()
+
+    assert "no console, still here" in log_file.read_text(encoding="utf-8")
+
+
+def test_console_handler_survives_unencodable_output(monkeypatch, tmp_path):
+    log_file = tmp_path / "console_encoding.log"
+    buffer = io.BytesIO()
+    strict = io.TextIOWrapper(buffer, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(logging_setup, "sys", types.SimpleNamespace(stderr=strict))
+
+    logger = setup_logging(log_path=log_file, level=logging.INFO, stream=True)
+    try:
+        # \u2192 (rightwards arrow) is not representable in cp1252.
+        logger.info("voice init arrow \u2192 done")
+    finally:
+        _cleanup_root()
+    strict.flush()
+
+    # The console kept the record using a backslash escape (no crash)...
+    assert b"\\u2192" in buffer.getvalue()
+    # ...and the UTF-8 file kept the real character.
+    assert "voice init arrow \u2192 done" in log_file.read_text(encoding="utf-8")
