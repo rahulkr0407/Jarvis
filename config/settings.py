@@ -12,10 +12,26 @@ action names the policy may even consider, and how voice capture behaves.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-#: Repository root (the folder that contains ``app/``, ``core/`` ...).
-PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
+
+def _resolve_project_root() -> Path:
+    """Return the writable application root.
+
+    When frozen by PyInstaller the code is unpacked into a temporary directory,
+    so ``__file__`` points there rather than at the user's folder. In that case
+    the writable root (``.env``, ``models/``, ``logs/``, ``data/``,
+    ``workspace/``) is the directory that contains the executable.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
+#: Application root: the repository when running from source, or the folder
+#: holding the packaged executable when frozen. Relative paths resolve here.
+PROJECT_ROOT: Path = _resolve_project_root()
 
 # --------------------------------------------------------------------------- #
 # Approval behaviour
@@ -143,8 +159,23 @@ MAX_DIRECTORY_ENTRIES: int = 50
 DRY_RUN: bool = False
 
 # Append-only JSON-lines audit log. Relative paths resolve against PROJECT_ROOT.
-# Arguments are scrubbed before writing; secrets are never stored.
+# Arguments are scrubbed before writing; secrets are never stored. The file is
+# rotated so it cannot grow without bound: keep AUDIT_LOG_BACKUP_COUNT old files
+# of at most AUDIT_LOG_MAX_BYTES each.
 AUDIT_LOG_PATH: str = "logs/audit.log"
+AUDIT_LOG_MAX_BYTES: int = 1_000_000
+AUDIT_LOG_BACKUP_COUNT: int = 3
+
+# --------------------------------------------------------------------------- #
+# Application logging
+# --------------------------------------------------------------------------- #
+# A rotated, secret-redacted application log (separate from the audit log). It
+# records lifecycle/diagnostic events only — never API keys, tokens, or audio
+# contents. Relative paths resolve against PROJECT_ROOT.
+LOG_PATH: str = "logs/jarvis.log"
+LOG_LEVEL: str = "INFO"
+LOG_MAX_BYTES: int = 1_000_000
+LOG_BACKUP_COUNT: int = 3
 
 # --------------------------------------------------------------------------- #
 # Phase 5: optional AI conversation + local storage

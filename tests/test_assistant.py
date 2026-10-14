@@ -217,3 +217,28 @@ def test_typed_open_url_proposes():
     approval = assistant.submit_text("go to example.com")
     assert approval is not None
     assert controller.pending_approval.action_name == "open_url"
+
+
+# --------------------------------------------------------------------------- #
+# Repeated commands produce independent proposals; nothing auto-runs twice
+# --------------------------------------------------------------------------- #
+def test_same_command_twice_creates_two_independent_proposals():
+    assistant, controller, _ = make_assistant()
+    assistant.request_listening()
+    first = assistant.submit_text("open notepad")
+    controller.reject()
+    assistant.request_listening()
+    second = assistant.submit_text("open notepad")
+    assert first is not None and second is not None
+    assert first.token != second.token
+    assert controller.last_outcome is None
+
+
+def test_repeating_a_command_never_executes_without_approval():
+    assistant, controller, _ = make_assistant()
+    for _ in range(3):
+        assistant.request_listening()
+        assistant.submit_text("open notepad")
+        controller.reject()
+    assert controller.state is AssistantState.IDLE
+    assert controller.last_outcome is None

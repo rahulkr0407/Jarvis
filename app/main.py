@@ -26,6 +26,7 @@ real environment variable.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 
 from ai.config import load_ai_config
@@ -33,8 +34,11 @@ from ai.env import load_dotenv
 from PySide6.QtWidgets import QApplication
 
 from actions.base import build_action_context
+from logging_setup import setup_logging
 from storage import open_storage
 from ui.main_window import MainWindow
+
+logger = logging.getLogger(__name__)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -60,6 +64,12 @@ def main(argv: list[str] | None = None) -> int:
     # Load .env before reading configuration. Real env vars win.
     load_dotenv()
 
+    # Configure logging after .env is loaded so the API key can be redacted.
+    # Nothing is logged before this point, and the key is never logged at all.
+    setup_logging()
+    logger.info("JARVIS starting (dry_run=%s, ai=%s, history=%s)", args.dry_run,
+                not args.no_ai, not args.no_history)
+
     app = QApplication(sys.argv)
     app.setApplicationName("JARVIS")
 
@@ -74,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_ai:
         ai_config = _with_enabled(ai_config, False)
     ai = AIOrchestrator(AIClient(ai_config))
+    logger.info("AI is %s", "configured" if ai.is_available() else "unavailable")
 
     # Local storage (preferences + optional history). Failures here must never
     # stop the app from starting.
@@ -83,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.no_history:
             preferences.history_enabled = False
     except Exception:
+        logger.warning("Local storage unavailable; continuing without it",
+                       exc_info=True)
         preferences = history = None
 
     window = MainWindow(
@@ -92,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         history=history,
     )
     window.show()
+    logger.info("JARVIS ready in IDLE")
     return app.exec()
 
 

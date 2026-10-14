@@ -12,11 +12,14 @@ engines can be swapped in without touching the pipeline.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Protocol
 
 from audio.errors import ModelNotFoundError, TranscriptionError
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class SpeechToText(Protocol):
@@ -69,6 +72,7 @@ class VoskSpeechToText:
         if self._model is not None:
             return self._model
         if not self._model_path.exists():
+            logger.warning("Vosk model not found at %s", self._model_path)
             raise ModelNotFoundError(
                 f"Vosk model not found at '{self._model_path}'. Download "
                 "'vosk-model-small-en-us-0.15' and extract it there. See "
@@ -85,4 +89,5 @@ class VoskSpeechToText:
             self._model = Model(str(self._model_path))
         except Exception as exc:  # pragma: no cover - depends on model files
             raise TranscriptionError(f"Could not load the Vosk model: {exc}") from exc
+        logger.info("Vosk model loaded from %s", self._model_path)
         return self._model

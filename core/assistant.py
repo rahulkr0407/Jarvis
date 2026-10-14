@@ -24,6 +24,7 @@ thread); a no-op is used by default so core stays silent and testable.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
@@ -36,6 +37,8 @@ from security.approval import ApprovalRequest
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids a core->ai import
     from ai.orchestrator import AIOrchestrator
+
+logger = logging.getLogger(__name__)
 
 
 class VoiceAssistant:
@@ -171,6 +174,7 @@ class VoiceAssistant:
         outcome = self._ai.interpret(text)
 
         if isinstance(outcome, AIProposal):
+            logger.info("AI proposed action %r for approval", outcome.action_name)
             approval = self.propose_action(
                 outcome.action_name, dict(outcome.arguments)
             )
@@ -180,11 +184,14 @@ class VoiceAssistant:
             return approval
 
         if isinstance(outcome, AIAnswer):
+            logger.info("AI produced a conversational answer")
             self._speak(outcome.text)
             self._return_to_idle()
             return None
 
         # AIUnavailable (or unexpected): speak the safe message and stop.
+        if isinstance(outcome, AIUnavailable):
+            logger.info("AI unavailable; falling back to a local reply")
         message = (
             outcome.message
             if isinstance(outcome, AIUnavailable)

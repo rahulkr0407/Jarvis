@@ -292,3 +292,52 @@ def test_open_application_allowed_by_default_allowlist():
     assert intent is not None
     assert intent.action_name == "open_application"
 
+
+# --------------------------------------------------------------------------- #
+# Invalid, ambiguous, and malicious input
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "open notepad with admin rights",
+        "open notepad and delete everything",
+        "create folder ..\\..\\Windows",
+        "create folder C:\\Windows\\System32",
+        "list files in ../../../",
+        "open file ../../etc/passwd",
+        "open notepad\r\nopen calculator",
+        "volume 100; shutdown",
+    ],
+)
+def test_malicious_or_ambiguous_phrases_are_refused(phrase):
+    assert CommandRouter().route(phrase) is None
+
+
+def test_metacharacters_can_only_produce_inert_safe_proposals():
+    # A shell-looking phrase may still map to a *safe* proposal whose argument is
+    # inert data (a URL or a search query). It is never a raw command, and it
+    # still needs approval before anything happens.
+    url_intent = CommandRouter().route("open https://evil.example/steal")
+    assert url_intent is not None
+    assert url_intent.action_name == "open_url"
+    assert url_intent.arguments["url"].startswith("https://")
+
+    search_intent = CommandRouter().route("search ; rm -rf /")
+    assert search_intent is not None
+    assert search_intent.action_name == "search_web"
+
+
+def test_control_characters_do_not_smuggle_a_second_command():
+    router = CommandRouter()
+    intent = router.route("open notepad\x00")
+    # A trailing NUL must not turn one command into a shell payload.
+    assert intent is None or intent.action_name == "open_application"
+    if intent is not None:
+        assert intent.arguments["target"] == "notepad"
+
+
+def test_extremely_long_input_is_handled_without_error():
+    router = CommandRouter()
+    assert router.route("open " + "a" * 10_000) is None
+    assert router.route("x" * 10_000) is None
+

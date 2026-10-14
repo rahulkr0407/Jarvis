@@ -9,6 +9,9 @@ log is deliberately defensive:
   replaced with ``"[redacted]"``.
 * Writing is best-effort. A missing directory, a full disk, or a permissions
   error must never break the assistant, so failures are swallowed.
+* The file is rotated so it cannot grow without bound: once it would exceed
+  ``max_bytes`` it is renamed to ``<name>.1`` (and older backups shifted up),
+  keeping at most ``backup_count`` old files.
 
 :class:`NullAuditLogger` is a no-op used by tests and by dry runs where no file
 should be touched.
@@ -22,6 +25,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
+
+from config import settings
 
 #: Substrings that mark an argument key as sensitive. Matching is case-folded.
 _SENSITIVE_KEY_PARTS = (
@@ -99,11 +104,20 @@ class NullAuditLogger:
 
 
 class FileAuditLogger:
-    """Appends JSON-line audit records to a file, best-effort."""
+    """Appends JSON-line audit records to a rotating file, best-effort."""
 
-    def __init__(self, path: Path | str, *, clock=time.time) -> None:
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        clock=time.time,
+        max_bytes: int = settings.AUDIT_LOG_MAX_BYTES,
+        backup_count: int = settings.AUDIT_LOG_BACKUP_COUNT,
+    ) -> None:
         self._path = Path(path)
         self._clock = clock
+        self._max_bytes = max(0, int(max_bytes))
+        self._backup_count = max(0, int(backup_count))
 
     @property
     def path(self) -> Path:
@@ -130,8 +144,37 @@ class FileAuditLogger:
                 "dry_run": bool(dry_run),
             }
             line = json.dumps(entry, default=str, sort_keys=True)
+            self._rotate_if_needed(len(line) + 1)
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
         except Exception:
             # Auditing must never be able to break an action or crash the app.
+            pass
+
+    def _rotate_if_needed(self, incoming: int) -> None:
+        """Shift backups and start a fresh file when the limit would be hit."""
+        if self._max_bytes <= 0 or self._backup_count <= 0:
+            return
+        try:
+            if not self._path.exists():
+                return
+            if self._path.stat().st_size + incoming <= self._max_bytes:
+                return
+        except OSError:
+            return
+
+        # Drop the oldest backup, then shift .N -> .N+1, and finally current -> .1.
+        try:
+            oldest = self._path.with_name(f"{self._path.name}.{self._backup_count}")
+            if oldest.exists():
+                oldest.unlink()
+            for index in range(self._backup_count - 1, 0, -1):
+                source = self._path.with_name(f"{self._path.name}.{index}")
+                if source.exists():
+                    source.replace(
+                        self._path.with_name(f"{self._path.name}.{index + 1}")
+                    )
+            self._path.replace(self._path.with_name(f"{self._path.name}.1"))
+        except OSError:
+            # Rotation is best-effort; a failure must not stop the write.
             pass

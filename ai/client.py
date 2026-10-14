@@ -11,6 +11,7 @@ logged, and never appears in an error message.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 
 from ai.config import AIConfig, load_ai_config
@@ -18,6 +19,8 @@ from ai.errors import ProviderUnavailableError
 from ai.provider import ChatMessage, LLMProvider, LLMResponse
 from ai.providers.null_provider import NullProvider
 from ai.providers.openai_compatible import OpenAICompatibleProvider
+
+logger = logging.getLogger(__name__)
 
 
 def build_provider(config: AIConfig) -> LLMProvider:
@@ -67,6 +70,13 @@ class AIClient:
             raise ProviderUnavailableError("AI features are disabled.")
         if not self._provider.is_available():
             raise ProviderUnavailableError("No AI provider is configured.")
-        return self._provider.complete(
-            messages, timeout=self._config.timeout_seconds
-        )
+        logger.debug("Calling AI provider %r", self._provider.name)
+        try:
+            return self._provider.complete(
+                messages, timeout=self._config.timeout_seconds
+            )
+        except Exception as exc:
+            # Log the error *type* only; never the message (and never the key).
+            logger.warning("AI provider %r call failed: %s",
+                           self._provider.name, type(exc).__name__)
+            raise

@@ -12,11 +12,14 @@ device is released even if the consumer raises or cancels.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Iterator
 
 from audio.errors import MicrophoneError
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class MicrophoneRecorder:
@@ -66,6 +69,7 @@ class MicrophoneRecorder:
         """
         should_stop = should_stop or (lambda: False)
         sounddevice = self._import_sounddevice()
+        logger.debug("Opening microphone for one utterance")
 
         start = self._clock()
         try:

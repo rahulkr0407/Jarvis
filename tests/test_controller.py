@@ -258,3 +258,88 @@ def test_broken_listener_does_not_break_controller():
 
     controller.add_listener(bad_listener)
     assert controller.activate() is AssistantState.LISTENING
+
+
+# --------------------------------------------------------------------------- #
+# No action without a fresh, exact approval; no duplicate execution
+# --------------------------------------------------------------------------- #
+def test_executor_is_not_called_without_approval():
+    calls: list[tuple[str, dict]] = []
+
+    def executor(name, arguments):
+        calls.append((name, dict(arguments)))
+
+    controller = make_controller(executor=executor)
+    controller.activate()
+    controller.propose_action("open_application", {"target": "notepad"})
+    # Merely proposing must never run anything.
+    assert calls == []
+    assert controller.state is AssistantState.AWAITING_APPROVAL
+    # Rejecting also runs nothing.
+    controller.reject()
+    assert calls == []
+
+
+def test_approve_twice_does_not_execute_twice():
+    executions: list[str] = []
+
+    def executor(name, arguments):
+        executions.append(name)
+
+    controller = make_controller(executor=executor)
+    controller.activate()
+    controller.propose_action("open_application")
+    controller.approve()
+    assert executions == ["open_application"]
+    # The second approval has nothing pending and must be refused.
+    with pytest.raises(NoPendingApprovalError):
+        controller.approve()
+    assert executions == ["open_application"]
+
+
+def test_used_token_cannot_execute_a_newer_proposal():
+    executions: list[str] = []
+
+    def executor(name, arguments):
+        executions.append(name)
+
+    controller = make_controller(executor=executor)
+    controller.activate()
+    first = controller.propose_action("open_application")
+    controller.approve(first.token)
+    assert controller.state is AssistantState.IDLE
+
+    controller.activate()
+    controller.propose_action("open_application")
+    with pytest.raises(StaleApprovalError):
+        controller.approve(first.token)
+    assert executions == ["open_application"]
+
+
+def test_cancel_before_execution_reports_not_started():
+    executions: list[str] = []
+
+    def executor(name, arguments):
+        executions.append(name)
+
+    controller = make_controller(executor=executor)
+    controller.activate()
+    controller.propose_action("open_application")
+    # Simulate a cancel racing in between approval and the executor call: the
+    # controller must refuse to run the action and report it was not started.
+    controller._cancel_requested = True
+    outcome = controller.approve()
+    assert outcome.started is False
+    assert outcome.succeeded is False
+    assert executions == []
+
+
+def test_repeated_identical_commands_create_independent_proposals():
+    controller = make_controller()
+    controller.activate()
+    first = controller.propose_action("open_application", {"target": "notepad"})
+    controller.reject()
+    controller.activate()
+    second = controller.propose_action("open_application", {"target": "notepad"})
+    assert first.token != second.token
+    assert first is not second
