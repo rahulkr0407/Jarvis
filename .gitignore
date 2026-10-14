@@ -37,6 +37,12 @@ models/
 workspace/
 logs/
 
+# Phase 5 secrets and local storage (never commit secrets or user data)
+.env
+.env.*
+!.env.example
+data/
+
 # Editors / OS
 .vscode/
 .idea/

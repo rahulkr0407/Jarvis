@@ -136,3 +136,40 @@ def make_action_context(tmp_path, **overrides):
     defaults.update(overrides)
     return ActionContext(**defaults)
 
+
+class FakeProvider:
+    """A controllable LLM provider for tests.
+
+    Configure the text it returns and/or an error it should raise. It records
+    the messages it received so tests can assert what was sent.
+    """
+
+    def __init__(
+        self,
+        text: str = "",
+        *,
+        available: bool = True,
+        error: Exception | None = None,
+        name: str = "fake",
+    ) -> None:
+        self.text = text
+        self._available = available
+        self._error = error
+        self._name = name
+        self.calls: list[list] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def complete(self, messages, *, timeout: float):
+        from ai.provider import LLMResponse
+
+        self.calls.append(list(messages))
+        if self._error is not None:
+            raise self._error
+        return LLMResponse(text=self.text, model=self._name)
+

@@ -1,8 +1,8 @@
-"""The JARVIS window (Phases 2–4: voice I/O, structured commands, actions).
+"""The JARVIS window (Phases 2–5: voice, commands, actions, optional AI).
 
 It shows the assistant status, a transcript area, an explicit activation
-control, a cancel/stop control, a typed-command box, an "Open File…" picker, and
-the approval panel.
+control, a cancel/stop control, a typed-command box, an "Open File…" picker, the
+approval panel, and a small Privacy / AI area.
 
 Safety-relevant UI rules honoured here:
 
@@ -16,6 +16,8 @@ Safety-relevant UI rules honoured here:
   and the executor's real outcome (implemented actions report what happened;
   anything else reports "not implemented").
 * Cancel stops the audio worker and clears any pending proposal before it runs.
+* The Privacy / AI panel only ever toggles local storage; it has no path to the
+  action layer. AI replies/proposals still go through the same approval gate.
 """
 
 from __future__ import annotations
@@ -23,12 +25,14 @@ from __future__ import annotations
 from PySide6.QtCore import QMetaObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -69,6 +73,9 @@ class MainWindow(QMainWindow):
         parent: QWidget | None = None,
         *,
         action_context: ActionContext | None = None,
+        ai=None,
+        preferences=None,
+        history=None,
     ) -> None:
         super().__init__(parent)
         if controller is None:
@@ -82,6 +89,17 @@ class MainWindow(QMainWindow):
             self._action_context = action_context
         self._controller = controller
         self._controller.add_listener(self._on_event)
+
+        # Phase 5: optional AI + local storage. Both are inert without config.
+        self._preferences = preferences
+        self._history = history
+        self._last_command_text = ""
+        if ai is None:
+            from ai.client import AIClient
+            from ai.orchestrator import AIOrchestrator
+
+            ai = AIOrchestrator(AIClient())
+        self._ai = ai
 
         # Worker-thread bookkeeping.
         self._listen_thread: QThread | None = None
@@ -190,7 +208,48 @@ class MainWindow(QMainWindow):
         self.message_label.setWordWrap(True)
         layout.addWidget(self.message_label)
 
+        self._build_privacy_panel(layout)
+
         layout.addStretch(1)
+
+    def _build_privacy_panel(self, layout) -> None:
+        """A tiny panel for AI status and local-storage controls."""
+        panel = QFrame()
+        panel.setFrameShape(QFrame.Shape.StyledPanel)
+        panel_layout = QVBoxLayout(panel)
+
+        enabled_by_pref = self._preferences is None or self._preferences.ai_enabled
+        configured = self._ai.is_available() and enabled_by_pref
+        if configured:
+            detail = self._ai.client.provider_name
+        elif not enabled_by_pref:
+            detail = "disabled in preferences"
+        else:
+            detail = "set JARVIS_LLM_API_KEY to enable"
+        self.ai_status_label = QLabel(
+            f"AI: {'configured' if configured else 'unavailable'} ({detail})"
+        )
+        self.ai_status_label.setWordWrap(True)
+        panel_layout.addWidget(self.ai_status_label)
+
+        controls = QHBoxLayout()
+        self.history_checkbox = QCheckBox("Record command history (local)")
+        if self._preferences is not None:
+            self.history_checkbox.setChecked(self._preferences.history_enabled)
+            self.history_checkbox.toggled.connect(self._on_toggle_history)
+        else:
+            self.history_checkbox.setEnabled(False)
+        controls.addWidget(self.history_checkbox)
+
+        self.clear_data_button = QPushButton("Clear stored data")
+        self.clear_data_button.clicked.connect(self._on_clear_data)
+        self.clear_data_button.setEnabled(
+            self._preferences is not None or self._history is not None
+        )
+        controls.addWidget(self.clear_data_button)
+        panel_layout.addLayout(controls)
+
+        layout.addWidget(panel)
 
     def _build_voice(self) -> None:
         """Wire the Qt-free voice components with worker threads."""
@@ -198,8 +257,13 @@ class MainWindow(QMainWindow):
         self._pipeline = VoiceCommandPipeline(
             MicrophoneRecorder(), VoskSpeechToText(), router
         )
+        # The AI is only wired in when the user preference allows it. With no
+        # preference store (tests) the injected orchestrator is used as-is.
+        ai = self._ai
+        if self._preferences is not None and not self._preferences.ai_enabled:
+            ai = None
         self._assistant = VoiceAssistant(
-            self._controller, router, speak=self._speak
+            self._controller, router, speak=self._speak, ai=ai
         )
 
         # Text-to-speech runs on its own thread.
@@ -276,7 +340,9 @@ class MainWindow(QMainWindow):
             return
         self.command_input.clear()
         self.transcript_label.setText(f'Typed: "{text}"')
+        self._last_command_text = text
         self._assistant.submit_text(text)
+        self._record_history(text)
         self._render()
 
     def _on_open_file(self) -> None:
@@ -296,7 +362,9 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.transcript_label.setText(f'Picked file: "{path}"')
+        self._last_command_text = f"open file {path}"
         self._assistant.propose_action("open_file", {"path": path})
+        self._record_history(self._last_command_text)
         self._render()
 
     def _on_approve(self) -> None:
@@ -319,6 +387,7 @@ class MainWindow(QMainWindow):
         # updating widgets directly here is safe.
         if event == "action_finished":
             outcome: ExecutionOutcome = payload["outcome"]
+            self._record_outcome(outcome)
             if outcome.succeeded:
                 self.message_label.setText(
                     f"'{outcome.action_name}' finished: {outcome.detail}"
@@ -341,6 +410,68 @@ class MainWindow(QMainWindow):
             self.message_label.setText(str(payload.get("message", "")))
 
         self._render()
+
+    # ------------------------------------------------------------------ #
+    # History + privacy (Phase 5)
+    # ------------------------------------------------------------------ #
+    def _record_history(self, text: str) -> None:
+        """Record one command if history is enabled. Best-effort, never raises."""
+        if self._history is None or self._preferences is None:
+            return
+        try:
+            if not self._preferences.history_enabled:
+                return
+            pending = self._controller.pending_approval
+            action_name = pending.action_name if pending is not None else None
+            self._history.add(text, action_name=action_name, enabled=True)
+        except Exception:
+            # Storage problems must never affect the assistant.
+            pass
+
+    def _record_outcome(self, outcome: ExecutionOutcome) -> None:
+        """Attach the result of an action to the most recent history row."""
+        if self._history is None or self._preferences is None:
+            return
+        try:
+            if not self._preferences.history_enabled:
+                return
+            self._history.update_latest_outcome(
+                outcome=outcome.detail, succeeded=outcome.succeeded
+            )
+        except Exception:
+            pass
+
+    def _on_toggle_history(self, checked: bool) -> None:
+        if self._preferences is None:
+            return
+        try:
+            self._preferences.history_enabled = bool(checked)
+        except Exception:
+            pass
+
+    def _on_clear_data(self) -> None:
+        """Delete all locally stored history and preferences, after confirming."""
+        answer = QMessageBox.question(
+            self,
+            "Clear stored data",
+            "Delete all locally stored command history and preferences?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            if self._history is not None:
+                self._history.clear()
+            if self._preferences is not None:
+                self._preferences.clear()
+                if hasattr(self, "history_checkbox"):
+                    self.history_checkbox.setChecked(
+                        self._preferences.history_enabled
+                    )
+            self.message_label.setText("Local stored data was cleared.")
+        except Exception as exc:
+            self.message_label.setText(f"Could not clear stored data: {exc}")
 
     def _render(self) -> None:
         """Redraw the window from the controller's current, real state."""

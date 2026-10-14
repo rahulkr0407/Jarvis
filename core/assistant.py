@@ -13,6 +13,11 @@
 Crucially, nothing here can reach ``EXECUTING``: recognizing a phrase only ever
 creates a proposal. Speech is treated as untrusted input throughout.
 
+When the deterministic router has no match, an *optional* AI orchestrator may be
+consulted (Phase 5). It is only ever allowed to produce a conversational reply or
+a candidate proposal — which still goes through the exact same policy and
+approval gate. The assistant holds no path by which AI can execute anything.
+
 The ``speak`` callback is injected by the UI (it forwards to a TTS worker
 thread); a no-op is used by default so core stays silent and testable.
 """
@@ -20,6 +25,7 @@ thread); a no-op is used by default so core stays silent and testable.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
 
 from core.command_router import CommandRouter
 from core.controller import AssistantController
@@ -27,6 +33,9 @@ from core.intents import IntentName
 from core.states import AssistantState
 from core.voice_pipeline import ListenResult, ListenStatus
 from security.approval import ApprovalRequest
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, avoids a core->ai import
+    from ai.orchestrator import AIOrchestrator
 
 
 class VoiceAssistant:
@@ -38,10 +47,12 @@ class VoiceAssistant:
         router: CommandRouter | None = None,
         *,
         speak: Callable[[str], None] | None = None,
+        ai: "AIOrchestrator | None" = None,
     ) -> None:
         self._controller = controller
         self._router = router or CommandRouter()
         self._speak = speak or (lambda text: None)
+        self._ai = ai
 
     @property
     def controller(self) -> AssistantController:
@@ -84,9 +95,7 @@ class VoiceAssistant:
 
         intent = self._router.route(text)
         if intent is None:
-            self._speak("I don't have a permitted action for that.")
-            self._return_to_idle()
-            return None
+            return self._handle_unknown(text)
 
         # Control command: stop everything and clear any pending proposal.
         # It needs no approval and never reaches the approval panel.
@@ -143,6 +152,48 @@ class VoiceAssistant:
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
+    def _handle_unknown(self, text: str) -> ApprovalRequest | None:
+        """Handle input the deterministic router did not recognize.
+
+        When an AI orchestrator is present it may supply a conversational reply
+        or a *candidate* proposal. A proposal is routed through the normal
+        :meth:`propose_action` path, so policy and approval still apply. With no
+        AI (or on any AI failure) this behaves exactly as Phase 4 did.
+        """
+        if self._ai is None:
+            self._speak("I don't have a permitted action for that.")
+            self._return_to_idle()
+            return None
+
+        # Imported lazily so core stays importable without the ai package.
+        from ai.orchestrator import AIAnswer, AIProposal, AIUnavailable
+
+        outcome = self._ai.interpret(text)
+
+        if isinstance(outcome, AIProposal):
+            approval = self.propose_action(
+                outcome.action_name, dict(outcome.arguments)
+            )
+            if approval is None:
+                self._speak("I couldn't propose that.")
+                self._return_to_idle()
+            return approval
+
+        if isinstance(outcome, AIAnswer):
+            self._speak(outcome.text)
+            self._return_to_idle()
+            return None
+
+        # AIUnavailable (or unexpected): speak the safe message and stop.
+        message = (
+            outcome.message
+            if isinstance(outcome, AIUnavailable)
+            else "I couldn't help with that."
+        )
+        self._speak(message)
+        self._return_to_idle()
+        return None
+
     def _return_to_idle(self) -> None:
         if self._controller.state is AssistantState.LISTENING:
             self._controller.cancel()

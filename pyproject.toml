@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-assistant"
-version = "0.4.0"
-description = "JARVIS: a safe, modular personal AI assistant for Windows (Phase 4: permission-controlled actions), preserving all earlier safety controls."
+version = "0.5.0"
+description = "JARVIS: a safe, modular personal AI assistant for Windows (Phase 5: optional AI conversation + local storage), preserving all earlier safety controls."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -30,7 +30,7 @@ dev = [
 jarvis = "app.main:main"
 
 [tool.setuptools]
-packages = ["app", "audio", "core", "security", "ui", "config", "actions"]
+packages = ["app", "audio", "core", "security", "ui", "config", "actions", "ai", "ai.providers", "storage"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
