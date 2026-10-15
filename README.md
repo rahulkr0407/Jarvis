@@ -164,17 +164,25 @@ or any AI path that can execute an action without approval.
   contains a secret.
 - **Bounded audit log**: `logs/audit.log` now rotates too, keeping only the most
   recent backups instead of growing forever.
+- **Configurable verbosity** (`JARVIS_LOG_LEVEL`, environment or `.env`) for a
+  single run, plus a Windows console handler that tolerates un-encodable output
+  instead of emitting "Logging error" noise.
+- **Voice-pipeline diagnostics**: an INFO line on microphone open (device,
+  samplerate, blocksize) and an INFO per-utterance summary (status, blocks, peak,
+  max RMS, noise floor, whether speech started, and transcript **length** — never
+  the transcript text); per-block RMS/peak at `DEBUG`; and tracebacks for
+  unexpected worker errors.
 - **Frozen-build aware paths**: under PyInstaller, `.env`, `models/`, `logs/`,
   `data/`, and `workspace/` resolve next to the executable rather than into a
   temporary unpack directory.
 - **A committed PyInstaller spec** (`jarvis.spec`) and documented build steps for
   a standalone `JARVIS.exe` (one-folder). The Vosk model stays external to keep
   the package small and license-clean.
-- **A larger safety test suite** (384 tests, 1 skipped): startup opens no
+- **A larger safety test suite** (404 tests, 1 skipped): startup opens no
   microphone; no action runs without a fresh, exact approval; approve/reject/
   timeout/cancel; malicious and ambiguous input; missing speech model; API/
-  network failures; and duplicate-execution protection. All OS and network calls
-  are mocked.
+  network failures; duplicate-execution protection; and voice-diagnostics /
+  log-level coverage. All OS and network calls are mocked.
 - **Docs**: installation, first run, microphone permissions, configuration,
   troubleshooting, uninstall, and build instructions, plus the data-flow diagram.
 
@@ -346,10 +354,13 @@ grants a capability; every value only *limits* what JARVIS may do.
   `AUDIT_LOG_PATH`, `AUDIT_LOG_MAX_BYTES`, `AUDIT_LOG_BACKUP_COUNT`.
 - `APPROVAL_TIMEOUT_SECONDS` and `ACTIVATION_SHORTCUT`.
 - Voice: `VOSK_MODEL_PATH`, `RECORD_MAX_SECONDS`, `SILENCE_TIMEOUT_SECONDS`,
-  `NO_SPEECH_TIMEOUT_SECONDS`, `TTS_ENABLED`, `TTS_RATE`, `TTS_VOLUME`.
+  `NO_SPEECH_TIMEOUT_SECONDS`, `SILENCE_RMS_THRESHOLD`, `VOSK_SAMPLE_RATE`,
+  `AUDIO_BLOCK_FRAMES`, `TTS_ENABLED`, `TTS_RATE`, `TTS_VOLUME`.
 - Logging: `LOG_PATH`, `LOG_LEVEL`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`.
   Set `JARVIS_LOG_LEVEL` (e.g. `DEBUG`) in the environment or `.env` to change
-  verbosity for a single run; an invalid value is ignored with a warning.
+  verbosity for a single run; an invalid value is ignored with a warning. At
+  `DEBUG` the voice pipeline also logs per-block RMS/peak levels, which helps
+  diagnose microphone and speech-detection problems.
 
 ### Configuring Phase 5 (optional AI)
 
@@ -433,6 +444,25 @@ pairs, and credentials embedded in URLs. The audit log reduces URLs to
 `scheme://host` and replaces any sensitive-keyed argument with `[redacted]`.
 **No API key is ever written to a log, and no audio or document contents are
 ever logged.**
+
+### Voice diagnostics
+
+The voice pipeline logs *what it observed* without ever logging *what you said*:
+
+- On microphone open, an **INFO** line records the device, samplerate, blocksize,
+  and dtype (`Microphone open request: …`).
+- Each utterance ends with an **INFO** summary —
+  `Listen complete: status=… blocks=… peak=… max_rms=… noise_floor=…
+  speech_started=… transcript_len=…`. It reports the **length** of the transcript,
+  never its text.
+- At `DEBUG` (`JARVIS_LOG_LEVEL=DEBUG`) every audio block logs its `rms` and
+  `peak` energy, which is how you distinguish "the mic heard nothing" from "the
+  recognizer missed the phrase."
+- An unexpected worker failure is logged with its traceback.
+
+The recognized transcript text is deliberately **never** written to a log — only
+its length. Set `JARVIS_LOG_LEVEL` for a single run; an unrecognized value warns
+and falls back to the default `LOG_LEVEL`.
 
 Privacy summary: audio stays on the machine; the database stores only an
 optional, off-by-default command history; the only outbound data is the
@@ -549,7 +579,7 @@ Jarvis/
 │   ├── test_controller.py
 │   ├── test_command_router.py   # Phase 2/3/4
 │   ├── test_intents.py          # Phase 3
-│   ├── test_voice_pipeline.py   # Phase 2
+│   ├── test_voice_pipeline.py   # Phase 2 (incl. diagnostics logging)
 │   ├── test_assistant.py        # Phase 2/3/4
 │   ├── test_action_paths.py          # Phase 4
 │   ├── test_action_open_application.py
@@ -567,8 +597,10 @@ Jarvis/
 │   ├── test_ai_client.py            # Phase 5
 │   ├── test_ai_orchestrator.py      # Phase 5
 │   ├── test_ai_assistant_integration.py   # Phase 5
-│   ├── test_logging_setup.py        # Phase 6
+│   ├── test_logging_setup.py        # Phase 6 (incl. JARVIS_LOG_LEVEL)
 │   ├── test_main_window.py          # Phase 6 (offscreen UI)
+│   ├── test_microphone.py           # Phase 2 (device + level logging)
+│   ├── test_listen_worker.py        # Phase 2/6 (worker error logging)
 │   └── test_speech_model_missing.py # Phase 6
 ├── models/                  # Vosk model (downloaded; git-ignored)
 ├── workspace/               # Phase 4 sandbox for file actions (git-ignored)
@@ -750,6 +782,7 @@ Jarvis/
 | "Vosk model not found at …" | Model not downloaded | See [Download the speech model](#download-the-speech-model-required-for-voice-input) |
 | Microphone never hears anything | Windows mic permission, wrong device, or all-silence | Check [Microphone permissions](#microphone-permissions); speak within ~6 s |
 | "No speech detected" every time | Input too quiet or wrong device | Raise input level in Windows; consider a different default mic |
+| Ctrl+Space seems to do nothing / always "No speech detected" | Mic too quiet, wrong device, or speech never crossed the RMS gate | Run with `JARVIS_LOG_LEVEL=DEBUG`; check the `Microphone open request:` line and each block's `rms` vs `SILENCE_RMS_THRESHOLD`; transcript text is not logged, so watch the UI's `Heard:` label |
 | Voice does nothing but typed commands work | The above — typed path needs no mic | Use the typed command box while you fix audio |
 | `AI: unavailable` in the panel | No key configured | Set `JARVIS_LLM_API_KEY` in `.env`, or ignore (AI is optional) |
 | AI proposals never appear | Model returned malformed output, or the action isn't registered | Expected: only registered actions are ever proposed; check `logs\jarvis.log` |
@@ -757,8 +790,10 @@ Jarvis/
 | SmartScreen warning on the packaged exe | The build is unsigned | Expected; see the packaging note above |
 | `MAX_PATH`/path errors with PySide6 | Windows Store Python | Use a short project-local `.venv` |
 
-Diagnostics: check `logs\jarvis.log` (redacted). For an action that did not run
-as expected, `logs\audit.log` shows one JSON line per attempt with the outcome.
+Diagnostics: check `logs\jarvis.log` (redacted) during a voice or command attempt,
+or set `JARVIS_LOG_LEVEL=DEBUG` for per-block audio levels and more detail. For
+an action that did not run as expected, `logs\audit.log` shows one JSON line per
+attempt with the outcome.
 
 ## Uninstall
 
@@ -887,7 +922,7 @@ display or microphone is not verified.
 
 Automated (run these):
 
-- [ ] `python -m pytest -q` passes — **384 tests, 1 skipped** (all OS and network
+- [ ] `python -m pytest -q` passes — **404 tests, 1 skipped** (all OS and network
       calls mocked; no microphone, model, display, or API key required).
 - [ ] `python -m compileall -q app config core security actions ai storage ui app/main.py logging_setup.py`
       reports no errors.
